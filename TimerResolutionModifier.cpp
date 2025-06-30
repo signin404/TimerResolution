@@ -4,16 +4,18 @@
 
 #pragma comment(lib, "User32.lib")
 
-// =======================================================================
-//  ↓↓↓ 新增的宏定义 ↓↓↓
-// =======================================================================
-// 手动定义 NT_SUCCESS 宏，以避免包含完整的 WDK 头文件
-// NTSTATUS 的成功代码都是非负数。
+// 手动定义 NT_SUCCESS 宏
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
-// =======================================================================
 
-// 声明未公开的 Native API 函数
-extern "C" NTSYSAPI NTSTATUS NTAPI NtSetTimerResolution(ULONG DesiredResolution, BOOLEAN SetResolution, PULONG CurrentResolution);
+// =======================================================================
+//  ↓↓↓ 核心改动：使用函数指针进行动态加载 ↓↓↓
+// =======================================================================
+// 1. 定义一个与 NtSetTimerResolution 函数签名完全匹配的函数指针类型
+typedef NTSTATUS(NTAPI* pNtSetTimerResolution)(ULONG, BOOLEAN, PULONG);
+
+// 2. 创建一个全局的函数指针变量，用于保存获取到的函数地址
+pNtSetTimerResolution NtSetTimerResolution_p = nullptr;
+// =======================================================================
 
 // 全局变量
 static volatile bool g_runThread = false;
@@ -28,6 +30,12 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
     while (g_runThread)
     {
+        // 3. 在调用前，必须检查函数指针是否有效
+        if (!NtSetTimerResolution_p) {
+            Sleep(1000); // 如果指针无效，则等待并重试，或直接退出
+            continue;
+        }
+
         HWND hForegroundWnd = GetForegroundWindow();
         bool isForeground = false;
         if (hForegroundWnd)
@@ -42,13 +50,14 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
         if (isForeground) {
             if (!g_isTimerHigh) {
-                if (NT_SUCCESS(NtSetTimerResolution(5000, TRUE, ¤tResolution))) {
+                // 4. 通过函数指针来调用函数
+                if (NT_SUCCESS(NtSetTimerResolution_p(5000, TRUE, ¤tResolution))) {
                     g_isTimerHigh = true;
                 }
             }
         } else {
             if (g_isTimerHigh) {
-                if (NT_SUCCESS(NtSetTimerResolution(5000, FALSE, ¤tResolution))) {
+                if (NT_SUCCESS(NtSetTimerResolution_p(5000, FALSE, ¤tResolution))) {
                     g_isTimerHigh = false;
                 }
             }
@@ -56,9 +65,9 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
         Sleep(250);
     }
 
-    if (g_isTimerHigh)
+    if (g_isTimerHigh && NtSetTimerResolution_p)
     {
-        NtSetTimerResolution(5000, FALSE, ¤tResolution);
+        NtSetTimerResolution_p(5000, FALSE, ¤tResolution);
         g_isTimerHigh = false;
     }
     return 0;
@@ -72,31 +81,40 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH)
     {
+        // 黑名单检查 (保持不变)
         wchar_t processPath[MAX_PATH];
         GetModuleFileNameW(NULL, processPath, MAX_PATH);
         const wchar_t* processName = wcsrchr(processPath, L'\\');
         processName = (processName) ? processName + 1 : processPath;
-
         wchar_t dllPath[MAX_PATH];
         GetModuleFileNameW(hModule, dllPath, MAX_PATH);
         wchar_t* lastSlash = wcsrchr(dllPath, L'\\');
-        if (lastSlash) {
-            *(lastSlash + 1) = L'\0';
-        }
+        if (lastSlash) { *(lastSlash + 1) = L'\0'; }
         std::wstring iniPath = dllPath;
         iniPath += L"blacklist.ini";
-
         wchar_t valueBuffer[2];
         GetPrivateProfileStringW(L"Blacklist", processName, L"0", valueBuffer, sizeof(valueBuffer) / sizeof(wchar_t), iniPath.c_str());
+        if (wcscmp(valueBuffer, L"0") != 0) { return TRUE; }
 
-        if (wcscmp(valueBuffer, L"0") != 0)
+        // =======================================================================
+        //  ↓↓↓ 核心改动：在DLL加载时获取函数地址 ↓↓↓
+        // =======================================================================
+        // 获取 ntdll.dll 的句柄，它在所有进程中都已加载
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtdll)
         {
-            return TRUE;
+            // 使用 GetProcAddress 获取函数地址，并存入函数指针
+            NtSetTimerResolution_p = (pNtSetTimerResolution)GetProcAddress(hNtdll, "NtSetTimerResolution");
         }
+        // =======================================================================
 
-        DisableThreadLibraryCalls(hModule);
-        g_runThread = true;
-        g_hThread = CreateThread(NULL, 0, MonitorThread, NULL, 0, NULL);
+        // 只有成功获取到函数地址后，才创建监控线程
+        if (NtSetTimerResolution_p)
+        {
+            DisableThreadLibraryCalls(hModule);
+            g_runThread = true;
+            g_hThread = CreateThread(NULL, 0, MonitorThread, NULL, 0, NULL);
+        }
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH)
     {
