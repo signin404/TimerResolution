@@ -13,20 +13,19 @@ on:
 jobs:
   # 任务的ID，可以自定义
   build-x64-dll:
-    # 指定任务运行的虚拟机环境，我们选择最新的Windows环境
+    # 指定任务运行的虚拟机环境
     runs-on: windows-latest
 
     # 定义任务包含的步骤
     steps:
     # 第一步：检出代码
-    # 这个操作会将你的仓库代码下载到虚拟机中
     - name: Checkout repository code
       uses: actions/checkout@v4
 
     # 第二步：编译64位DLL
-    # 我们使用MSVC编译器 (cl.exe)
     - name: Compile 64-bit DLL using MSVC
-      # 在Windows的开发者命令行环境中执行编译命令
+      # 关键修正：在这里指定使用 cmd 作为 shell
+      shell: cmd
       run: |
         echo "Starting 64-bit DLL compilation..."
         call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
@@ -34,7 +33,6 @@ jobs:
         echo "Compilation finished."
 
     # 第三步：上传编译产物
-    # 将编译好的DLL文件打包，以便我们下载
     - name: Upload compiled DLL as an artifact
       uses: actions/upload-artifact@v4
       with:
