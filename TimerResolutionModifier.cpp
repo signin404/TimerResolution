@@ -41,7 +41,7 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
                 if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution))) { g_isTimerHigh = false; }
             }
         }
-        Sleep(250);
+        Sleep(10000);
     }
     if (g_isTimerHigh && g_pfnSetTimerResolution) {
         g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution);
@@ -69,11 +69,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         wchar_t* lastSlash = wcsrchr(dllPath, L'\\');
         if (lastSlash) { *(lastSlash + 1) = L'\0'; }
         std::wstring iniPath = dllPath;
-        iniPath += L"blacklist.ini";
+        iniPath += L"Config.ini";
 
         // 2. 黑名单检查
         wchar_t checkBuffer[2];
-        GetPrivateProfileStringW(L"Blacklist", processName, L"0", checkBuffer, sizeof(checkBuffer), iniPath.c_str());
+        GetPrivateProfileStringW(L"BlackList", processName, L"0", checkBuffer, sizeof(checkBuffer), iniPath.c_str());
         if (wcscmp(checkBuffer, L"0") != 0) { return TRUE; }
 
         // 3. 读取INI配置
