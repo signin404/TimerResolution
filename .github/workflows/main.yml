@@ -1,28 +1,76 @@
-name: Build 64-bit DLL
+# 工作流的名称，会显示在Actions标签页中
+name: Build 32-bit and 64-bit DLLs
 
+# 触发工作流的事件
 on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
 
+# 定义工作流要执行的任务
 jobs:
+  # =======================================================================
+  #  任务一：编译 64-bit (x64) DLL
+  # =======================================================================
   build-x64-dll:
+    # 指定任务运行的虚拟机环境
     runs-on: windows-latest
 
+    # 定义任务包含的步骤
     steps:
+    # 1. 检出代码
     - name: Checkout repository code
       uses: actions/checkout@v4
 
+    # 2. 编译64位DLL
     - name: Compile 64-bit DLL using MSVC
       shell: cmd
       run: |
-        echo "Starting 64-bit DLL compilation..."
+        echo "Setting up MSVC for x64..."
         call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        echo "Compiling x64 DLL..."
         cl.exe /D_USRDLL /D_WINDLL /utf-8 TimerResolutionModifier.cpp /link /DLL /OUT:TimerResolutionModifier_x64.dll User32.lib /MACHINE:X64
-        echo "Compilation finished."
+        echo "x64 compilation finished."
 
-    - name: Upload compiled DLL as an artifact
+    # 3. 上传64位DLL产物
+    - name: Upload 64-bit DLL as an artifact
       uses: actions/upload-artifact@v4
       with:
+        # 上传的产物包名称
         name: Compiled-DLL-x64
+        # 要上传的文件的路径
         path: TimerResolutionModifier_x64.dll
+
+  # =======================================================================
+  #  任务二：编译 32-bit (x86) DLL
+  # =======================================================================
+  build-x86-dll:
+    # 同样使用最新的Windows环境
+    runs-on: windows-latest
+
+    # 定义任务包含的步骤
+    steps:
+    # 1. 检出代码
+    - name: Checkout repository code
+      uses: actions/checkout@v4
+
+    # 2. 编译32位DLL
+    - name: Compile 32-bit DLL using MSVC
+      shell: cmd
+      run: |
+        echo "Setting up MSVC for x86..."
+        rem **关键区别**: 调用 vcvars32.bat 来设置32位编译环境
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
+        echo "Compiling x86 DLL..."
+        rem **关键区别**: /MACHINE:X86 和不同的输出文件名
+        cl.exe /D_USRDLL /D_WINDLL /utf-8 TimerResolutionModifier.cpp /link /DLL /OUT:TimerResolutionModifier_x86.dll User32.lib /MACHINE:X86
+        echo "x86 compilation finished."
+
+    # 3. 上传32位DLL产物
+    - name: Upload 32-bit DLL as an artifact
+      uses: actions/upload-artifact@v4
+      with:
+        # 使用不同的产物名称以便区分
+        name: Compiled-DLL-x86
+        # 上传32位版本的文件
+        path: TimerResolutionModifier_x86.dll
