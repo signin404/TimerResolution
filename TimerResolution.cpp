@@ -1,9 +1,6 @@
 // TimerResolutionModifier.cpp
 #include <Windows.h>
 #include <string>
-#include <vector>
-#include <mutex>
-#include <tlhelp32.h> // For thread enumeration
 #include <avrt.h>      // For MMCSS functions
 
 #pragma comment(lib, "User32.lib")
@@ -19,62 +16,44 @@ typedef NTSTATUS(NTAPI* pfnGenericTimerApi)(ULONG, BOOLEAN, PULONG);
 pfnGenericTimerApi g_pfnSetTimerResolution = nullptr;
 static volatile bool g_runThread = false;
 static volatile bool g_isTimerHigh = false;
-static HANDLE g_hThread = NULL;
+static HANDLE g_hTimerThread = NULL;
 static ULONG g_targetResolution = 5000;
 static bool g_isSpecialProcess = false;
 
 // =======================================================================
-//  ↓↓↓ 新增：用于MMCSS的全局变量 ↓↓↓
+//  ↓↓↓ 新增/修改：用于MMCSS的全局变量 ↓↓↓
 // =======================================================================
-static std::vector<HANDLE> g_mmcss_handles; // 存储已注册MMCSS的线程句柄
-static std::mutex g_mutex;                  // 用于保护对vector的访问
+static HANDLE g_hMmcssThread = NULL;     // MMCSS专用线程的句柄
+static HANDLE g_hShutdownEvent = NULL;   // 用于通知线程退出的事件
 // =======================================================================
 
-
-// 监控线程的主函数 (无任何改动)
-DWORD WINAPI MonitorThread(LPVOID lpParam) { /* ... (此函数代码与上一版完全相同) ... */ }
+// 计时器精度监控线程 (此函数无任何改动)
+DWORD WINAPI TimerMonitorThread(LPVOID lpParam) { /* ... (此函数代码与上一版完全相同) ... */ }
 
 // =======================================================================
-//  ↓↓↓ 新增：用于注册和注销MMCSS的工作函数 ↓↓↓
+//  ↓↓↓ 新增：MMCSS专用线程的主函数 ↓↓↓
 // =======================================================================
-// 在一个新线程中执行，以避免在DllMain中做过多工作
-DWORD WINAPI MmcssWorker(LPVOID lpParam)
+DWORD WINAPI MmcssRegistrationThread(LPVOID lpParam)
 {
     wchar_t* taskName = (wchar_t*)lpParam;
     DWORD taskIndex = 0;
+    HANDLE hMmcssTask = NULL;
 
-    // 1. 枚举当前进程的所有线程
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (hSnap == INVALID_HANDLE_VALUE) {
-        delete[] taskName; // 清理内存
-        return 1;
+    // 1. 调用函数，将当前线程（自己）注册到MMCSS
+    hMmcssTask = AvSetMmThreadCharacteristicsW(taskName, &taskIndex);
+
+    // 释放传递过来的字符串内存
+    delete[] taskName;
+
+    if (hMmcssTask)
+    {
+        // 2. 注册成功，进入等待状态，直到收到关闭信号
+        WaitForSingleObject(g_hShutdownEvent, INFINITE);
+
+        // 3. 收到信号后，清理并恢复线程特性
+        AvRevertMmThreadCharacteristics(hMmcssTask);
     }
 
-    THREADENTRY32 te32;
-    te32.dwSize = sizeof(THREADENTRY32);
-    DWORD currentProcessId = GetCurrentProcessId();
-
-    if (Thread32First(hSnap, &te32)) {
-        do {
-            // 2. 检查线程是否属于当前进程
-            if (te32.th32OwnerProcessID == currentProcessId) {
-                // 3. 尝试为该线程注册MMCSS
-                HANDLE hThread = OpenThread(THREAD_SET_INFORMATION, FALSE, te32.th32ThreadID);
-                if (hThread) {
-                    HANDLE hMmcss = AvSetMmThreadCharacteristicsW(hThread, taskName, &taskIndex);
-                    if (hMmcss) {
-                        // 4. 如果成功，保存句柄以便将来清理
-                        std::lock_guard<std::mutex> lock(g_mutex);
-                        g_mmcss_handles.push_back(hMmcss);
-                    }
-                    CloseHandle(hThread);
-                }
-            }
-        } while (Thread32Next(hSnap, &te32));
-    }
-
-    CloseHandle(hSnap);
-    delete[] taskName; // 清理从DllMain传递过来的字符串内存
     return 0;
 }
 // =======================================================================
@@ -116,7 +95,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         if (!g_pfnSetTimerResolution) { return TRUE; }
 
-        // 5. 检查是否为特殊进程 (永久修改计时器精度)
+        // 5. 检查是否为特殊进程
         GetPrivateProfileStringW(L"PersistentProcesses", processName, L"0", checkBuffer, sizeof(checkBuffer), iniPath.c_str());
         if (wcscmp(checkBuffer, L"0") != 0)
         {
@@ -130,19 +109,19 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             g_isSpecialProcess = false;
             DisableThreadLibraryCalls(hModule);
             g_runThread = true;
-            g_hThread = CreateThread(NULL, 0, MonitorThread, NULL, 0, NULL);
+            g_hTimerThread = CreateThread(NULL, 0, TimerMonitorThread, NULL, 0, NULL);
 
-            // =======================================================================
-            //  ↓↓↓ 新增：为普通进程启用MMCSS调度 ↓↓↓
-            // =======================================================================
+            // 7. 为普通进程启用MMCSS调度
             if (GetPrivateProfileIntW(L"MMCSS", L"Enabled", 0, iniPath.c_str()) == 1)
             {
-                wchar_t* taskName = new wchar_t[64];
-                GetPrivateProfileStringW(L"MMCSS", L"TaskName", L"Pro Audio", taskName, 64, iniPath.c_str());
-                // 创建一个新线程来执行MMCSS注册，避免阻塞DllMain
-                CreateThread(NULL, 0, MmcssWorker, taskName, 0, NULL);
+                // 创建一个事件用于未来的关闭信号
+                g_hShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+                if (g_hShutdownEvent) {
+                    wchar_t* taskName = new wchar_t[64];
+                    GetPrivateProfileStringW(L"MMCSS", L"TaskName", L"Pro Audio", taskName, 64, iniPath.c_str());
+                    g_hMmcssThread = CreateThread(NULL, 0, MmcssRegistrationThread, taskName, 0, NULL);
+                }
             }
-            // =======================================================================
         }
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH)
@@ -156,23 +135,26 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         else
         {
-            if (g_hThread)
+            if (g_hTimerThread)
             {
                 g_runThread = false;
-                WaitForSingleObject(g_hThread, 5000);
-                CloseHandle(g_hThread);
-                g_hThread = NULL;
+                WaitForSingleObject(g_hTimerThread, 5000);
+                CloseHandle(g_hTimerThread);
             }
         }
 
         // =======================================================================
-        //  ↓↓↓ 新增：清理所有已注册的MMCSS句柄 ↓↓↓
+        //  ↓↓↓ 新增：清理MMCSS线程和相关句柄 ↓↓↓
         // =======================================================================
-        std::lock_guard<std::mutex> lock(g_mutex);
-        for (HANDLE hMmcss : g_mmcss_handles) {
-            AvRevertMmThreadCharacteristics(hMmcss);
+        if (g_hMmcssThread) {
+            // 发送关闭信号
+            if (g_hShutdownEvent) SetEvent(g_hShutdownEvent);
+            // 等待线程结束
+            WaitForSingleObject(g_hMmcssThread, 5000);
+            // 清理句柄
+            CloseHandle(g_hMmcssThread);
+            if (g_hShutdownEvent) CloseHandle(g_hShutdownEvent);
         }
-        g_mmcss_handles.clear();
         // =======================================================================
     }
     return TRUE;
