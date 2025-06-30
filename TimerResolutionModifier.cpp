@@ -51,13 +51,13 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
         if (isForeground) {
             if (!g_isTimerHigh) {
                 // 4. 通过通用函数指针来调用函数
-                if (NT_SUCCESS(g_pfnSetTimerResolution(5000, TRUE, ¤tResolution))) {
+                if (NT_SUCCESS(g_pfnSetTimerResolution(5000, TRUE, &currentResolution))) {
                     g_isTimerHigh = true;
                 }
             }
         } else {
             if (g_isTimerHigh) {
-                if (NT_SUCCESS(g_pfnSetTimerResolution(5000, FALSE, ¤tResolution))) {
+                if (NT_SUCCESS(g_pfnSetTimerResolution(5000, FALSE, &currentResolution))) {
                     g_isTimerHigh = false;
                 }
             }
@@ -67,7 +67,7 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
     if (g_isTimerHigh && g_pfnSetTimerResolution)
     {
-        g_pfnSetTimerResolution(5000, FALSE, ¤tResolution);
+        g_pfnSetTimerResolution(5000, FALSE, &currentResolution);
         g_isTimerHigh = false;
     }
     return 0;
