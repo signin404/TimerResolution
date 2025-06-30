@@ -2,8 +2,15 @@
 #include <Windows.h>
 #include <string>
 
-// 不再需要 timeapi.h 和 Winmm.lib
 #pragma comment(lib, "User32.lib")
+
+// =======================================================================
+//  ↓↓↓ 新增的宏定义 ↓↓↓
+// =======================================================================
+// 手动定义 NT_SUCCESS 宏，以避免包含完整的 WDK 头文件
+// NTSTATUS 的成功代码都是非负数。
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+// =======================================================================
 
 // 声明未公开的 Native API 函数
 extern "C" NTSYSAPI NTSTATUS NTAPI NtSetTimerResolution(ULONG DesiredResolution, BOOLEAN SetResolution, PULONG CurrentResolution);
@@ -17,7 +24,7 @@ static HANDLE g_hThread = NULL;
 DWORD WINAPI MonitorThread(LPVOID lpParam)
 {
     const DWORD currentProcessId = GetCurrentProcessId();
-    ULONG currentResolution; // 用于接收NtSetTimerResolution的返回值
+    ULONG currentResolution;
 
     while (g_runThread)
     {
@@ -35,14 +42,12 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
         if (isForeground) {
             if (!g_isTimerHigh) {
-                // 请求 0.5ms 的精度 (5000 * 100ns = 0.5ms)
                 if (NT_SUCCESS(NtSetTimerResolution(5000, TRUE, ¤tResolution))) {
                     g_isTimerHigh = true;
                 }
             }
         } else {
             if (g_isTimerHigh) {
-                // 释放之前设置的精度
                 if (NT_SUCCESS(NtSetTimerResolution(5000, FALSE, ¤tResolution))) {
                     g_isTimerHigh = false;
                 }
@@ -51,7 +56,6 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
         Sleep(250);
     }
 
-    // 线程退出前，确保恢复计时器精度
     if (g_isTimerHigh)
     {
         NtSetTimerResolution(5000, FALSE, ¤tResolution);
@@ -63,7 +67,7 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 // 导出函数
 extern "C" __declspec(dllexport) void PlaceholderExport() {}
 
-// DLL入口点 (黑名单逻辑保持不变)
+// DLL入口点
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved)
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH)
