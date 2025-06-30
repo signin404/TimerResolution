@@ -1,42 +1,28 @@
-# 工作流的名称，会显示在Actions标签页中
 name: Build 64-bit DLL
 
-# 触发工作流的事件
 on:
-  # 当有代码推送到 main 分支时自动触发
   push:
     branches: [ "main" ]
-  # 允许你手动在Actions页面点击按钮触发
   workflow_dispatch:
 
-# 定义工作流要执行的任务
 jobs:
-  # 任务的ID，可以自定义
   build-x64-dll:
-    # 指定任务运行的虚拟机环境
     runs-on: windows-latest
 
-    # 定义任务包含的步骤
     steps:
-    # 第一步：检出代码
     - name: Checkout repository code
       uses: actions/checkout@v4
 
-    # 第二步：编译64位DLL
     - name: Compile 64-bit DLL using MSVC
-      # 关键修正：在这里指定使用 cmd 作为 shell
       shell: cmd
       run: |
         echo "Starting 64-bit DLL compilation..."
         call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-        cl.exe /D_USRDLL /D_WINDLL TimerResolutionModifier.cpp /link /DLL /OUT:TimerResolutionModifier_x64.dll Winmm.lib /MACHINE:X64
+        cl.exe /D_USRDLL /D_WINDLL /utf-8 TimerResolutionModifier.cpp /link /DLL /OUT:TimerResolutionModifier_x64.dll User32.lib /MACHINE:X64
         echo "Compilation finished."
 
-    # 第三步：上传编译产物
     - name: Upload compiled DLL as an artifact
       uses: actions/upload-artifact@v4
       with:
-        # 上传的产物包名称
         name: Compiled-DLL-x64
-        # 要上传的文件的路径
         path: TimerResolutionModifier_x64.dll
