@@ -8,13 +8,13 @@
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 
 // =======================================================================
-//  ↓↓↓ 核心改动：使用函数指针进行动态加载 ↓↓↓
+//  ↓↓↓ 终极解决方案：使用完全通用的名称来定义函数指针 ↓↓↓
 // =======================================================================
-// 1. 定义一个与 NtSetTimerResolution 函数签名完全匹配的函数指针类型
-typedef NTSTATUS(NTAPI* pNtSetTimerResolution)(ULONG, BOOLEAN, PULONG);
+// 1. 定义一个通用的函数指针类型
+typedef NTSTATUS(NTAPI* pfnGenericTimerApi)(ULONG, BOOLEAN, PULONG);
 
-// 2. 创建一个全局的函数指针变量，用于保存获取到的函数地址
-pNtSetTimerResolution NtSetTimerResolution_p = nullptr;
+// 2. 创建一个全局的、使用通用名称的函数指针变量
+pfnGenericTimerApi g_pfnSetTimerResolution = nullptr;
 // =======================================================================
 
 // 全局变量
@@ -30,9 +30,9 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
     while (g_runThread)
     {
-        // 3. 在调用前，必须检查函数指针是否有效
-        if (!NtSetTimerResolution_p) {
-            Sleep(1000); // 如果指针无效，则等待并重试，或直接退出
+        // 3. 检查通用函数指针是否有效
+        if (!g_pfnSetTimerResolution) {
+            Sleep(1000);
             continue;
         }
 
@@ -50,14 +50,14 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
         if (isForeground) {
             if (!g_isTimerHigh) {
-                // 4. 通过函数指针来调用函数
-                if (NT_SUCCESS(NtSetTimerResolution_p(5000, TRUE, ¤tResolution))) {
+                // 4. 通过通用函数指针来调用函数
+                if (NT_SUCCESS(g_pfnSetTimerResolution(5000, TRUE, ¤tResolution))) {
                     g_isTimerHigh = true;
                 }
             }
         } else {
             if (g_isTimerHigh) {
-                if (NT_SUCCESS(NtSetTimerResolution_p(5000, FALSE, ¤tResolution))) {
+                if (NT_SUCCESS(g_pfnSetTimerResolution(5000, FALSE, ¤tResolution))) {
                     g_isTimerHigh = false;
                 }
             }
@@ -65,9 +65,9 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
         Sleep(250);
     }
 
-    if (g_isTimerHigh && NtSetTimerResolution_p)
+    if (g_isTimerHigh && g_pfnSetTimerResolution)
     {
-        NtSetTimerResolution_p(5000, FALSE, ¤tResolution);
+        g_pfnSetTimerResolution(5000, FALSE, ¤tResolution);
         g_isTimerHigh = false;
     }
     return 0;
@@ -97,19 +97,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         if (wcscmp(valueBuffer, L"0") != 0) { return TRUE; }
 
         // =======================================================================
-        //  ↓↓↓ 核心改动：在DLL加载时获取函数地址 ↓↓↓
+        //  ↓↓↓ 使用通用名称的指针来获取函数地址 ↓↓↓
         // =======================================================================
-        // 获取 ntdll.dll 的句柄，它在所有进程中都已加载
         HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
         if (hNtdll)
         {
-            // 使用 GetProcAddress 获取函数地址，并存入函数指针
-            NtSetTimerResolution_p = (pNtSetTimerResolution)GetProcAddress(hNtdll, "NtSetTimerResolution");
+            // GetProcAddress 使用的是纯字符串，这部分不会有问题
+            g_pfnSetTimerResolution = (pfnGenericTimerApi)GetProcAddress(hNtdll, "NtSetTimerResolution");
         }
         // =======================================================================
 
-        // 只有成功获取到函数地址后，才创建监控线程
-        if (NtSetTimerResolution_p)
+        if (g_pfnSetTimerResolution)
         {
             DisableThreadLibraryCalls(hModule);
             g_runThread = true;
