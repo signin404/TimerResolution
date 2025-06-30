@@ -29,7 +29,7 @@ jobs:
         echo "Setting up MSVC for x64..."
         call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
         echo "Compiling x64 DLL..."
-        cl.exe /D_USRDLL /D_WINDLL /utf-8 TimerResolutionModifier.cpp /link /DLL /OUT:TimerResolutionModifier_x64.dll User32.lib /MACHINE:X64
+        cl.exe /D_USRDLL /D_WINDLL /utf-8 TimerResolution.cpp /link /DLL /OUT:TimerResolution_x64.dll User32.lib /MACHINE:X64
         echo "x64 compilation finished."
 
     # 3. 上传64位DLL产物
@@ -39,7 +39,7 @@ jobs:
         # 上传的产物包名称
         name: Compiled-DLL-x64
         # 要上传的文件的路径
-        path: TimerResolutionModifier_x64.dll
+        path: TimerResolution_x64.dll
 
   # =======================================================================
   #  任务二：编译 32-bit (x86) DLL
@@ -63,7 +63,7 @@ jobs:
         call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
         echo "Compiling x86 DLL..."
         rem **关键区别**: /MACHINE:X86 和不同的输出文件名
-        cl.exe /D_USRDLL /D_WINDLL /utf-8 TimerResolutionModifier.cpp /link /DLL /OUT:TimerResolutionModifier_x86.dll User32.lib /MACHINE:X86
+        cl.exe /D_USRDLL /D_WINDLL /utf-8 TimerResolution.cpp /link /DLL /OUT:TimerResolution_x86.dll User32.lib /MACHINE:X86
         echo "x86 compilation finished."
 
     # 3. 上传32位DLL产物
@@ -73,4 +73,4 @@ jobs:
         # 使用不同的产物名称以便区分
         name: Compiled-DLL-x86
         # 上传32位版本的文件
-        path: TimerResolutionModifier_x86.dll
+        path: TimerResolution_x86.dll
