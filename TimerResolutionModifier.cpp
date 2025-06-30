@@ -7,20 +7,21 @@
 // 手动定义 NT_SUCCESS 宏
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
 
-// =======================================================================
-//  ↓↓↓ 终极解决方案：使用完全通用的名称来定义函数指针 ↓↓↓
-// =======================================================================
-// 1. 定义一个通用的函数指针类型
+// 定义函数指针类型
 typedef NTSTATUS(NTAPI* pfnGenericTimerApi)(ULONG, BOOLEAN, PULONG);
 
-// 2. 创建一个全局的、使用通用名称的函数指针变量
-pfnGenericTimerApi g_pfnSetTimerResolution = nullptr;
-// =======================================================================
-
 // 全局变量
+pfnGenericTimerApi g_pfnSetTimerResolution = nullptr;
 static volatile bool g_runThread = false;
 static volatile bool g_isTimerHigh = false;
 static HANDLE g_hThread = NULL;
+
+// =======================================================================
+//  ↓↓↓ 新增的全局变量，用于保存从INI读取的精度值 ↓↓↓
+// =======================================================================
+static ULONG g_targetResolution = 5000; // 默认值为 0.5ms (5000 * 100ns)
+// =======================================================================
+
 
 // 监控线程的主函数
 DWORD WINAPI MonitorThread(LPVOID lpParam)
@@ -30,7 +31,6 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
     while (g_runThread)
     {
-        // 3. 检查通用函数指针是否有效
         if (!g_pfnSetTimerResolution) {
             Sleep(1000);
             continue;
@@ -50,14 +50,16 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
         if (isForeground) {
             if (!g_isTimerHigh) {
-                // 4. 通过通用函数指针来调用函数
-                if (NT_SUCCESS(g_pfnSetTimerResolution(5000, TRUE, &currentResolution))) {
+                // =======================================================================
+                //  ↓↓↓ 修改：使用配置好的精度值 ↓↓↓
+                // =======================================================================
+                if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, TRUE, &currentResolution))) {
                     g_isTimerHigh = true;
                 }
             }
         } else {
             if (g_isTimerHigh) {
-                if (NT_SUCCESS(g_pfnSetTimerResolution(5000, FALSE, &currentResolution))) {
+                if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution))) {
                     g_isTimerHigh = false;
                 }
             }
@@ -67,7 +69,7 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
 
     if (g_isTimerHigh && g_pfnSetTimerResolution)
     {
-        g_pfnSetTimerResolution(5000, FALSE, &currentResolution);
+        g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution);
         g_isTimerHigh = false;
     }
     return 0;
@@ -97,16 +99,30 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         if (wcscmp(valueBuffer, L"0") != 0) { return TRUE; }
 
         // =======================================================================
-        //  ↓↓↓ 使用通用名称的指针来获取函数地址 ↓↓↓
+        //  ↓↓↓ 新增：在黑名单检查后，读取INI配置，仅执行一次 ↓↓↓
         // =======================================================================
-        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-        if (hNtdll)
-        {
-            // GetProcAddress 使用的是纯字符串，这部分不会有问题
-            g_pfnSetTimerResolution = (pfnGenericTimerApi)GetProcAddress(hNtdll, "NtSetTimerResolution");
+        // 使用 GetPrivateProfileIntW 读取整数值，如果键不存在，则使用第三个参数作为默认值
+        g_targetResolution = GetPrivateProfileIntW(
+            L"Settings",          // Section name
+            L"Resolution",        // Key name
+            5000,                 // Default value (0.5ms)
+            iniPath.c_str()       // Full path to the INI file
+        );
+
+        // 做一个简单的安全检查，防止用户输入0
+        if (g_targetResolution == 0) {
+            g_targetResolution = 5000;
         }
         // =======================================================================
 
+        // 获取函数地址 (保持不变)
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtdll)
+        {
+            g_pfnSetTimerResolution = (pfnGenericTimerApi)GetProcAddress(hNtdll, "NtSetTimerResolution");
+        }
+
+        // 启动线程 (保持不变)
         if (g_pfnSetTimerResolution)
         {
             DisableThreadLibraryCalls(hModule);
@@ -116,6 +132,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH)
     {
+        // 清理逻辑 (保持不变)
         if (g_hThread)
         {
             g_runThread = false;
