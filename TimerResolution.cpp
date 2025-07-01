@@ -17,8 +17,10 @@ static volatile bool g_isTimerHigh = false;
 static HANDLE g_hThread = NULL;
 static ULONG g_targetResolution = 5000;
 static bool g_isSpecialProcess = false;
+// 新增：用于存储检测间隔时间，默认10秒
+static DWORD g_checkInterval = 10000; 
 
-// 监控线程的主函数 (此函数无任何改动)
+// 监控线程的主函数
 DWORD WINAPI MonitorThread(LPVOID lpParam)
 {
     const DWORD currentProcessId = GetCurrentProcessId();
@@ -41,7 +43,8 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
                 if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution))) { g_isTimerHigh = false; }
             }
         }
-        Sleep(10000);
+        // 使用从INI读取的配置作为检测间隔
+        Sleep(g_checkInterval);
     }
     if (g_isTimerHigh && g_pfnSetTimerResolution) {
         g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution);
@@ -79,6 +82,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // 3. 读取INI配置
         g_targetResolution = GetPrivateProfileIntW(L"Settings", L"Resolution", 5000, iniPath.c_str());
         if (g_targetResolution == 0) { g_targetResolution = 5000; }
+        
+        // =======================================================================
+        //  ↓↓↓ 核心改动：读取前后台检测的时间间隔配置 ↓↓↓
+        // =======================================================================
+        g_checkInterval = GetPrivateProfileIntW(L"Settings", L"CheckInterval", 10000, iniPath.c_str());
+        if (g_checkInterval < 1000) { g_checkInterval = 1000; } // 增加一个最小间隔限制，防止过于频繁的检测
+        // =======================================================================
 
         // 4. 获取函数地址
         HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
@@ -87,10 +97,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         if (!g_pfnSetTimerResolution) { return TRUE; }
 
-        // =======================================================================
-        //  ↓↓↓ 核心改动：使用INI文件检查特殊进程，替换硬编码 ↓↓↓
-        // =======================================================================
-        // 检查当前进程是否存在于 [PersistentProcesses] 区域
+        // 5. 检查特殊进程
         GetPrivateProfileStringW(L"PersistentProcesses", processName, L"0", checkBuffer, sizeof(checkBuffer), iniPath.c_str());
         
         if (wcscmp(checkBuffer, L"0") != 0)
@@ -108,11 +115,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             g_runThread = true;
             g_hThread = CreateThread(NULL, 0, MonitorThread, NULL, 0, NULL);
         }
-        // =======================================================================
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH)
     {
-        // 清理逻辑完全不变，它已能正确处理两种情况
+        // 清理逻辑完全不变
         if (g_isSpecialProcess)
         {
             if (g_pfnSetTimerResolution) {
