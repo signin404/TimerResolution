@@ -9,15 +9,24 @@
 
 // 定义函数指针类型
 typedef NTSTATUS(NTAPI* pfnGenericTimerApi)(ULONG, BOOLEAN, PULONG);
+// =======================================================================
+// 新增区域 1: 添加 SetThreadIdealProcessor 的函数指针类型定义
+// =======================================================================
+typedef DWORD(WINAPI* pfnSetThreadIdealProcessor)(HANDLE, DWORD);
+
 
 // 全局变量
 pfnGenericTimerApi g_pfnSetTimerResolution = nullptr;
+// =======================================================================
+// 新增区域 2: 添加用于存储 SetThreadIdealProcessor 函数地址的全局变量
+// =======================================================================
+pfnSetThreadIdealProcessor g_pfnSetThreadIdealProcessor = nullptr;
+
 static volatile bool g_runThread = false;
 static volatile bool g_isTimerHigh = false;
 static HANDLE g_hThread = NULL;
 static ULONG g_targetResolution = 5000;
 static bool g_isSpecialProcess = false;
-// 新增：用于存储检测间隔时间，默认10秒
 static DWORD g_checkInterval = 10000; 
 
 // 监控线程的主函数
@@ -43,7 +52,6 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
                 if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution))) { g_isTimerHigh = false; }
             }
         }
-        // 使用从INI读取的配置作为检测间隔
         Sleep(g_checkInterval);
     }
     if (g_isTimerHigh && g_pfnSetTimerResolution) {
@@ -83,12 +91,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         g_targetResolution = GetPrivateProfileIntW(L"Settings", L"Resolution", 5000, iniPath.c_str());
         if (g_targetResolution == 0) { g_targetResolution = 5000; }
         
-        // =======================================================================
-        //  ↓↓↓ 核心改动：读取前后台检测的时间间隔配置 ↓↓↓
-        // =======================================================================
         g_checkInterval = GetPrivateProfileIntW(L"Settings", L"CheckInterval", 10000, iniPath.c_str());
-        if (g_checkInterval < 1000) { g_checkInterval = 1000; } // 增加一个最小间隔限制，防止过于频繁的检测
-        // =======================================================================
+        if (g_checkInterval < 1000) { g_checkInterval = 1000; }
 
         // 4. 获取函数地址
         HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
@@ -114,6 +118,29 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             DisableThreadLibraryCalls(hModule);
             g_runThread = true;
             g_hThread = CreateThread(NULL, 0, MonitorThread, NULL, 0, NULL);
+
+            // =======================================================================
+            // 新增区域 3: 为监控线程设置理想核心
+            // =======================================================================
+            // 从INI读取理想核心设置，-1表示未设置
+            int idealCore = GetPrivateProfileIntW(L"Settings", L"IdealCore", -1, iniPath.c_str());
+
+            // 只有在用户明确指定了一个有效的核心，并且当前不是特殊进程时，才执行设置
+            if (idealCore >= 0 && g_hThread != NULL) 
+            {
+                // 获取 SetThreadIdealProcessor 函数的地址
+                HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+                if (hKernel32) {
+                    g_pfnSetThreadIdealProcessor = (pfnSetThreadIdealProcessor)GetProcAddress(hKernel32, "SetThreadIdealProcessor");
+                }
+
+                // 如果成功获取到函数地址，则执行设置
+                if (g_pfnSetThreadIdealProcessor) {
+                    // 对我们自己的监控线程设置理想核心
+                    g_pfnSetThreadIdealProcessor(g_hThread, static_cast<DWORD>(idealCore));
+                }
+            }
+            // =======================================================================
         }
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH)
