@@ -13,13 +13,13 @@ set "REG_VALUE_NAME=AppInit_DLLs"
 cls
 echo.
 echo  -----------------------------------------------------
-echo   1. °²×°
-echo   2. Ğ¶ÔØ
-echo   3. ÍË³ö
+echo   1. å®‰è£…
+echo   2. å¸è½½
+echo   3. é€€å‡º
 echo  -----------------------------------------------------
 echo.
 
-choice /c 123 /n /m "ÇëÑ¡ÔñÑ¡Ïî: "
+choice /c 123 /n /m "è¯·é€‰æ‹©é€‰é¡¹: "
 
 if errorlevel 3 goto :end
 if errorlevel 2 goto :uninstall
@@ -61,7 +61,7 @@ if not exist "%DLL_PATH%" (
 )
 
 echo.
-echo  °²×°Íê³É.
+echo  å®‰è£…å®Œæˆ.
 goto :end
 
 :uninstall
@@ -83,7 +83,7 @@ echo  Processing 32-bit registry key...
 call :remove_value "%REG_KEY_32%" "%DLL_PATH%"
 
 echo.
-echo  Ğ¶ÔØÍê³É.
+echo  å¸è½½å®Œæˆ.
 goto :end
 
 
