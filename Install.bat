@@ -1,172 +1,350 @@
 @echo off
 setlocal enabledelayedexpansion
+::chcp 65001 >nul
 
-:: --- Configuration ---
-set "DLL_NAME_X64=TimerResolution_x64.dll"
-set "DLL_NAME_X86=TimerResolution_x86.dll"
+:: ===========================================
+:: ÅäÖÃÇøÓò - ·Ö±ðÖ¸¶¨64Î»ºÍ32Î»DLLÎÄ¼þ
+:: ===========================================
+:: 64Î»×¢²á±íÒª×¢²áµÄDLLÎÄ¼þ£¨Í¨³£ÊÇx64°æ±¾£©
+set "DLL_LIST_X64="
+set "DLL_LIST_X64=!DLL_LIST_X64! TimerResolution_x64.dll"
+:: Ìí¼Ó¸ü¶à64Î»DLLÇë°´ÉÏÊö¸ñÊ½¼ÌÐøÌí¼Ó
 
-set "REG_KEY_64=HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
-set "REG_KEY_32=HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows NT\CurrentVersion\Windows"
-set "REG_VALUE_NAME=AppInit_DLLs"
+:: 32Î»×¢²á±íÒª×¢²áµÄDLLÎÄ¼þ£¨Í¨³£ÊÇx86°æ±¾£©
+set "DLL_LIST_X86="
+set "DLL_LIST_X86=!DLL_LIST_X86! TimerResolution_x86.dll"
+:: Ìí¼Ó¸ü¶à32Î»DLLÇë°´ÉÏÊö¸ñÊ½¼ÌÐøÌí¼Ó
+:: ===========================================
 
-:menu
+:: »ñÈ¡½Å±¾ËùÔÚÄ¿Â¼
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+
+:: ×¢²á±íÂ·¾¶
+set "REG_PATH_64=HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+set "REG_PATH_32=HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Windows"
+
+:MENU
 cls
+echo ========================================
+echo           DLL×¢²á±í¹ÜÀí¹¤¾ß
+echo ========================================
 echo.
-echo  -----------------------------------------------------
-echo   1. å®‰è£…
-echo   2. å¸è½½
-echo   3. é€€å‡º
-echo  -----------------------------------------------------
+echo µ±Ç°Ä¿Â¼: %SCRIPT_DIR%
+echo 64Î»DLLÅäÖÃ: %DLL_LIST_X64%
+echo 32Î»DLLÅäÖÃ: %DLL_LIST_X86%
 echo.
+echo ÇëÑ¡Ôñ²Ù×÷:
+echo 1. °²×°
+echo 2. Ð¶ÔØ
+echo 3. ²é¿´
+echo.
+set /p choice=ÇëÊäÈëÑ¡Ïî (1-3): 
 
-choice /c 123 /n /m "è¯·é€‰æ‹©é€‰é¡¹: "
+if "%choice%"=="1" goto REGISTER_ALL_DLLS
+if "%choice%"=="2" goto UNREGISTER_ALL_DLLS
+if "%choice%"=="3" goto VIEW_STATUS
+echo ÎÞÐ§Ñ¡Ïî ÇëÖØÐÂÑ¡Ôñ£¡
+pause
+goto MENU
 
-if errorlevel 3 goto :end
-if errorlevel 2 goto :uninstall
-if errorlevel 1 goto :install
-
-:install
+:REGISTER_ALL_DLLS
 cls
-echo.
-echo  [ INSTALLING ]
-echo  ------------
-echo.
-
-rem --- Configure required registry settings for AppInit_DLLs to work ---
-::echo  -> Enabling LoadAppInit_DLLs mechanism...
-reg add "%REG_KEY_64%" /v LoadAppInit_DLLs /t REG_DWORD /d 1 /f >nul
-reg add "%REG_KEY_32%" /v LoadAppInit_DLLs /t REG_DWORD /d 1 /f >nul
-::echo  -> Disabling signature requirement (for non-signed DLLs)...
-reg add "%REG_KEY_64%" /v RequireSignedAppInit_DLLs /t REG_DWORD /d 0 /f >nul
-reg add "%REG_KEY_32%" /v RequireSignedAppInit_DLLs /t REG_DWORD /d 0 /f >nul
+echo ========================================
+echo         ×¢²áËùÓÐÅäÖÃµÄDLLÎÄ¼þ
+echo ========================================
 echo.
 
-rem --- Process 64-bit DLL ---
-set "DLL_PATH=%~dp0%DLL_NAME_X64%"
-if not exist "%DLL_PATH%" (
-    echo  ERROR: 64-bit DLL not found at %DLL_PATH%
-) else (
-    echo  Processing 64-bit registry key...
-    call :add_value "%REG_KEY_64%" "%DLL_PATH%"
+:: ¼ì²é64Î»DLLÎÄ¼þ
+echo ÕýÔÚ¼ì²é64Î»DLLÎÄ¼þ...
+set "dll_count_x64=0"
+if not "%DLL_LIST_X64%"=="" (
+    for %%d in (%DLL_LIST_X64%) do (
+        if exist "%SCRIPT_DIR%\%%d" (
+            set /a dll_count_x64+=1
+            set "dll_x64_!dll_count_x64!=%SCRIPT_DIR%\%%d"
+            echo [64Î»] %%d [´æÔÚ] - ½«×¢²á
+        ) else (
+            echo [64Î»] %%d [²»´æÔÚ] - Ìø¹ý
+        )
+    )
 )
-echo.
 
-rem --- Process 32-bit DLL ---
-set "DLL_PATH=%~dp0%DLL_NAME_X86%"
-if not exist "%DLL_PATH%" (
-    echo  ERROR: 32-bit DLL not found at %DLL_PATH%
-) else (
-    echo  Processing 32-bit registry key...
-    call :add_value "%REG_KEY_32%" "%DLL_PATH%"
+:: ¼ì²é32Î»DLLÎÄ¼þ
+echo.
+echo ÕýÔÚ¼ì²é32Î»DLLÎÄ¼þ...
+set "dll_count_x86=0"
+if not "%DLL_LIST_X86%"=="" (
+    for %%d in (%DLL_LIST_X86%) do (
+        if exist "%SCRIPT_DIR%\%%d" (
+            set /a dll_count_x86+=1
+            set "dll_x86_!dll_count_x86!=%SCRIPT_DIR%\%%d"
+            echo [32Î»] %%d [´æÔÚ] - ½«×¢²á
+        ) else (
+            echo [32Î»] %%d [²»´æÔÚ] - Ìø¹ý
+        )
+    )
+)
+
+if %dll_count_x64%==0 (
+    if %dll_count_x86%==0 (
+        echo.
+        echo ¾¯¸æ£ºÎ´ÕÒµ½ÈÎºÎÅäÖÃµÄDLLÎÄ¼þ£¡
+        echo Çë¼ì²éÅäÖÃÇøÓòÖÐµÄDLLÎÄ¼þÃûÊÇ·ñÕýÈ· ÒÔ¼°ÎÄ¼þÊÇ·ñ´æÔÚÓÚµ±Ç°Ä¿Â¼ 
+        pause
+        goto MENU
+    )
 )
 
 echo.
-echo  å®‰è£…å®Œæˆ.
-goto :end
+echo ¿ªÊ¼×¢²áDLLÎÄ¼þ...
+echo.
 
-:uninstall
+:: ×¢²á64Î»DLL
+if %dll_count_x64% gtr 0 (
+    echo === ×¢²á64Î»DLLÎÄ¼þµ½64Î»×¢²á±í ===
+    for /l %%i in (1,1,%dll_count_x64%) do (
+        set "current_dll=!dll_x64_%%i!"
+        echo ÕýÔÚ×¢²á: !current_dll!
+        call :ADD_DLL_TO_REGISTRY "%REG_PATH_64%" "!current_dll!"
+    )
+    echo 64Î»DLL×¢²áÍê³É£¡
+    echo.
+)
+
+:: ×¢²á32Î»DLL
+if %dll_count_x86% gtr 0 (
+    echo === ×¢²á32Î»DLLÎÄ¼þµ½32Î»×¢²á±í ===
+    for /l %%i in (1,1,%dll_count_x86%) do (
+        set "current_dll=!dll_x86_%%i!"
+        echo ÕýÔÚ×¢²á: !current_dll!
+        call :ADD_DLL_TO_REGISTRY "%REG_PATH_32%" "!current_dll!"
+    )
+    echo 32Î»DLL×¢²áÍê³É£¡
+    echo.
+)
+
+echo ========================================
+echo ËùÓÐÅäÖÃµÄDLLÎÄ¼þ×¢²áÍê³É£¡
+echo ========================================
+pause
+goto MENU
+
+:UNREGISTER_ALL_DLLS
 cls
-echo.
-echo  [ UNINSTALLING ]
-echo  --------------
-echo.
-
-rem --- Process 64-bit DLL ---
-set "DLL_PATH=%~dp0%DLL_NAME_X64%"
-echo  Processing 64-bit registry key...
-call :remove_value "%REG_KEY_64%" "%DLL_PATH%"
+echo ========================================
+echo         É¾³ýËùÓÐÅäÖÃµÄDLLÎÄ¼þ
+echo ========================================
 echo.
 
-rem --- Process 32-bit DLL ---
-set "DLL_PATH=%~dp0%DLL_NAME_X86%"
-echo  Processing 32-bit registry key...
-call :remove_value "%REG_KEY_32%" "%DLL_PATH%"
+:: Í³¼ÆÅäÖÃµÄDLLÎÄ¼þ
+set "dll_count_x64=0"
+if not "%DLL_LIST_X64%"=="" (
+    for %%d in (%DLL_LIST_X64%) do (
+        set "full_path=%SCRIPT_DIR%\%%d"
+        set /a dll_count_x64+=1
+        set "dll_x64_!dll_count_x64!=!full_path!"
+        echo [64Î»] %%d - ½«´Ó64Î»×¢²á±íÉ¾³ý
+    )
+)
+
+set "dll_count_x86=0"
+if not "%DLL_LIST_X86%"=="" (
+    for %%d in (%DLL_LIST_X86%) do (
+        set "full_path=%SCRIPT_DIR%\%%d"
+        set /a dll_count_x86+=1
+        set "dll_x86_!dll_count_x86!=!full_path!"
+        echo [32Î»] %%d - ½«´Ó32Î»×¢²á±íÉ¾³ý
+    )
+)
+
+if %dll_count_x64%==0 (
+    if %dll_count_x86%==0 (
+        echo.
+        echo ¾¯¸æ£ºÅäÖÃÖÐÎ´Ö¸¶¨ÈÎºÎDLLÎÄ¼þ£¡
+        echo Çë¼ì²éÅäÖÃÇøÓòÖÐµÄDLL_LIST_X64ºÍDLL_LIST_X86ÉèÖÃ 
+        pause
+        goto MENU
+    )
+)
 
 echo.
-echo  å¸è½½å®Œæˆ.
-goto :end
+echo ¿ªÊ¼É¾³ýDLLÎÄ¼þ...
+echo.
 
-
-:: =================================================================
-:: SUBROUTINES
-:: =================================================================
-
-:add_value
-    set "REG_KEY=%~1"
-    set "DLL_TO_ADD=%~2"
-    set "CURRENT_VALUE="
-
-    rem --- Query the current registry value without causing an error if it doesn't exist ---
-    for /f "tokens=2,*" %%a in ('reg query "%REG_KEY%" /v %REG_VALUE_NAME% 2^>nul') do (
-        if /i "%%a"=="REG_SZ" (
-            set "CURRENT_VALUE=%%b"
-        )
+:: É¾³ý64Î»DLL
+if %dll_count_x64% gtr 0 (
+    echo === ´Ó64Î»×¢²á±íÉ¾³ýDLLÎÄ¼þ ===
+    for /l %%i in (1,1,%dll_count_x64%) do (
+        set "current_dll=!dll_x64_%%i!"
+        echo ÕýÔÚÉ¾³ý: !current_dll!
+        call :REMOVE_DLL_FROM_REGISTRY "%REG_PATH_64%" "!current_dll!"
     )
+    echo 64Î»DLLÉ¾³ýÍê³É£¡
+    echo.
+)
 
-    if not defined CURRENT_VALUE (
-        rem --- Value is empty, just add our DLL ---
-        echo     Value is empty. Creating new value.
-        set "NEW_VALUE=%DLL_TO_ADD%"
-    ) else (
-        rem --- Value exists, check if our DLL is already there ---
-        echo "!CURRENT_VALUE!" | find /i "%DLL_TO_ADD%" >nul
-        if !errorlevel! equ 0 (
-            echo     DLL path already exists. No changes made.
-            goto :eof
-        )
-        rem --- Append our DLL to the existing value ---
-        echo     Value exists. Appending DLL path.
-        set "NEW_VALUE=%CURRENT_VALUE%,%DLL_TO_ADD%"
+:: É¾³ý32Î»DLL
+if %dll_count_x86% gtr 0 (
+    echo === ´Ó32Î»×¢²á±íÉ¾³ýDLLÎÄ¼þ ===
+    for /l %%i in (1,1,%dll_count_x86%) do (
+        set "current_dll=!dll_x86_%%i!"
+        echo ÕýÔÚÉ¾³ý: !current_dll!
+        call :REMOVE_DLL_FROM_REGISTRY "%REG_PATH_32%" "!current_dll!"
     )
+    echo 32Î»DLLÉ¾³ýÍê³É£¡
+    echo.
+)
 
-    reg add "%REG_KEY%" /v %REG_VALUE_NAME% /t REG_SZ /d "!NEW_VALUE!" /f >nul
-    echo     Successfully updated registry.
-goto :eof
+echo ========================================
+echo ËùÓÐÅäÖÃµÄDLLÎÄ¼þÉ¾³ýÍê³É£¡
+echo ========================================
+pause
+goto MENU
 
+:VIEW_STATUS
+cls
+echo ========================================
+echo           µ±Ç°×¢²á±í×´Ì¬
+echo ========================================
+echo.
+echo 64Î»×¢²á±í×´Ì¬:
+echo ----------------
+reg query "%REG_PATH_64%" /v AppInit_DLLs 2>nul
+reg query "%REG_PATH_64%" /v LoadAppInit_DLLs 2>nul
+reg query "%REG_PATH_64%" /v RequireSignedAppInit_DLLs 2>nul
 
-:remove_value
-    set "REG_KEY=%~1"
-    set "DLL_TO_REMOVE=%~2"
-    set "CURRENT_VALUE="
+echo.
+echo 32Î»×¢²á±í×´Ì¬:
+echo ----------------
+reg query "%REG_PATH_32%" /v AppInit_DLLs 2>nul
+reg query "%REG_PATH_32%" /v LoadAppInit_DLLs 2>nul
+reg query "%REG_PATH_32%" /v RequireSignedAppInit_DLLs 2>nul
 
-    rem --- Query the current registry value ---
-    for /f "tokens=2,*" %%a in ('reg query "%REG_KEY%" /v %REG_VALUE_NAME% 2^>nul') do (
-        if /i "%%a"=="REG_SZ" (
-            set "CURRENT_VALUE=%%b"
-        )
-    )
-
-    if not defined CURRENT_VALUE (
-        echo     Value is empty. Nothing to remove.
-        goto :eof
-    )
-
-    rem --- Check if our DLL path is in the value ---
-    echo "!CURRENT_VALUE!" | find /i "%DLL_TO_REMOVE%" >nul
-    if !errorlevel! neq 0 (
-        echo     DLL path not found in value. Nothing to remove.
-        goto :eof
-    )
-
-    rem --- Perform the removal and cleanup commas ---
-    set "CLEANED_VALUE=!CURRENT_VALUE:%DLL_TO_REMOVE%=!"
-    set "CLEANED_VALUE=!CLEANED_VALUE:,,=,!"
-    if "!CLEANED_VALUE:~0,1!"=="," set "CLEANED_VALUE=!CLEANED_VALUE:~1!"
-    if "!CLEANED_VALUE:~-1!"=="," set "CLEANED_VALUE=!CLEANED_VALUE:~0,-1!"
-
-    if defined CLEANED_VALUE (
-        rem --- Other DLLs remain, update the value ---
-        echo     Removing DLL path and updating value.
-        reg add "%REG_KEY%" /v %REG_VALUE_NAME% /t REG_SZ /d "!CLEANED_VALUE!" /f >nul
-    ) else (
-        rem --- Our DLL was the only one, delete the value completely ---
-        echo     DLL was the only entry. Deleting value.
-        reg delete "%REG_KEY%" /v %REG_VALUE_NAME% /f >nul
-    )
-    echo     Successfully updated registry.
-goto :eof
-
-:end
 echo.
 pause
-exit
+goto MENU
+
+:ADD_DLL_TO_REGISTRY
+set "reg_path=%~1"
+set "dll_path=%~2"
+
+:: »ñÈ¡µ±Ç°AppInit_DLLsµÄÖµ
+for /f "tokens=2*" %%a in ('reg query "%reg_path%" /v AppInit_DLLs 2^>nul ^| find "AppInit_DLLs"') do (
+    set "current_value=%%b"
+)
+
+:: Èç¹ûÃ»ÓÐÕÒµ½ÏÖÓÐÖµ ÉèÖÃÎª¿Õ
+if not defined current_value set "current_value="
+
+:: ¼ì²éDLLÊÇ·ñÒÑ¾­´æÔÚ
+echo !current_value! | find /i "%dll_path%" >nul
+if not errorlevel 1 (
+    echo DLLÒÑ´æÔÚÓÚ×¢²á±íÖÐ Ìø¹ýÌí¼Ó 
+    goto SET_OTHER_VALUES
+)
+
+:: Ìí¼ÓDLLµ½ÏÖÓÐÖµ
+if "!current_value!"=="" (
+    set "new_value=%dll_path%"
+) else (
+    set "new_value=!current_value!,%dll_path%"
+)
+
+:: Ð´ÈëAppInit_DLLs
+reg add "%reg_path%" /v AppInit_DLLs /t REG_SZ /d "!new_value!" /f >nul
+
+:SET_OTHER_VALUES
+:: ÉèÖÃLoadAppInit_DLLsÎª1
+reg add "%reg_path%" /v LoadAppInit_DLLs /t REG_DWORD /d 1 /f >nul
+
+:: ÉèÖÃRequireSignedAppInit_DLLsÎª0
+reg add "%reg_path%" /v RequireSignedAppInit_DLLs /t REG_DWORD /d 0 /f >nul
+
+goto :eof
+
+:REMOVE_DLL_FROM_REGISTRY
+set "reg_path=%~1"
+set "dll_path=%~2"
+
+:: »ñÈ¡µ±Ç°AppInit_DLLsµÄÖµ
+set "current_value="
+set "value_found=0"
+for /f "tokens=2*" %%a in ('reg query "%reg_path%" /v AppInit_DLLs 2^>nul ^| find "AppInit_DLLs"') do (
+    set "current_value=%%b"
+    set "value_found=1"
+)
+
+:: Èç¹ûÃ»ÓÐÕÒµ½ÏÖÓÐÖµ ´´½¨¿ÕÖµ²¢Ö±½ÓÉèÖÃÆäËûÖµ
+if "!value_found!"=="0" (
+    echo ×¢²á±íÖÐÎ´ÕÒµ½AppInit_DLLsÖµ ´´½¨¿ÕÖµ 
+    reg add "%reg_path%" /v AppInit_DLLs /t REG_SZ /d "" /f >nul
+    goto SET_OTHER_VALUES_REMOVE
+)
+
+:: Èç¹ûÕÒµ½µÄÖµÎª¿Õ Ò²Ö±½ÓÉèÖÃÆäËûÖµ
+if "!current_value!"=="" (
+    echo AppInit_DLLsÖµÎª¿Õ 
+    goto SET_OTHER_VALUES_REMOVE
+)
+
+:: ¼ì²éDLLÊÇ·ñ´æÔÚ
+echo !current_value! | find /i "%dll_path%" >nul
+if errorlevel 1 (
+    echo DLL²»´æÔÚÓÚ×¢²á±íÖÐ 
+    goto SET_OTHER_VALUES_REMOVE
+)
+
+:: ÒÆ³ýÖ¸¶¨µÄDLL - ´¦Àí¸÷ÖÖ¿ÉÄÜµÄÎ»ÖÃ
+set "new_value=!current_value!"
+
+:: ´¦ÀíDLLÔÚ¿ªÍ·µÄÇé¿ö (dll,other -> other)
+set "new_value=!new_value:%dll_path%,=!"
+
+:: ´¦ÀíDLLÔÚÖÐ¼äµÄÇé¿ö (other,dll,another -> other,another)
+set "new_value=!new_value:,%dll_path%,=,!"
+
+:: ´¦ÀíDLLÔÚÄ©Î²µÄÇé¿ö (other,dll -> other)
+set "new_value=!new_value:,%dll_path%=!"
+
+:: ´¦ÀíDLLÊÇÎ¨Ò»ÖµµÄÇé¿ö (dll -> "")
+if "!new_value!"=="%dll_path%" set "new_value="
+
+:: ÇåÀí¿ÉÄÜ²ÐÁôµÄÎÊÌâ
+:: ´¦Àí¿ªÍ·µÄ¶ººÅ
+if not "!new_value!"=="" (
+    if "!new_value:~0,1!"=="," set "new_value=!new_value:~1!"
+)
+
+:: ´¦Àí½áÎ²µÄ¶ººÅ
+if not "!new_value!"=="" (
+    if "!new_value:~-1!"=="," set "new_value=!new_value:~0,-1!"
+)
+
+:: ´¦ÀíÁ¬ÐøµÄ¶ººÅ
+:CLEAN_COMMAS
+if not "!new_value!"=="" (
+    set "temp_value=!new_value:,,=,!"
+    if not "!temp_value!"=="!new_value!" (
+        set "new_value=!temp_value!"
+        goto CLEAN_COMMAS
+    )
+)
+
+:: Èç¹û½á¹ûÖ»ÊÇ¶ººÅ»ò¿Õ°× ÔòÇå¿Õ
+if "!new_value!"=="," set "new_value="
+
+:: Ð´Èë¸üÐÂºóµÄÖµ
+reg add "%reg_path%" /v AppInit_DLLs /t REG_SZ /d "!new_value!" /f >nul
+
+:SET_OTHER_VALUES_REMOVE
+:: ÉèÖÃLoadAppInit_DLLsÎª1
+reg add "%reg_path%" /v LoadAppInit_DLLs /t REG_DWORD /d 1 /f >nul
+
+:: ÉèÖÃRequireSignedAppInit_DLLsÎª0
+reg add "%reg_path%" /v RequireSignedAppInit_DLLs /t REG_DWORD /d 0 /f >nul
+
+goto :eof
+
+:EXIT
+exit /b 0
