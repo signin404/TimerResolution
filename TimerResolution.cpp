@@ -28,6 +28,32 @@ static bool g_isSpecialProcess = false;
 static DWORD g_checkInterval = 10; // 轮询模式的默认间隔（10秒）
 static int g_checkMode = 1;        // 1: SetWinEventHook模式, 2: 轮询模式
 
+// =======================================================================
+// 新增区域: 检查进程名是否在INI的某个区域中 (用于新的BlackList和PersistentProcesses格式)
+// =======================================================================
+bool IsProcessInSection(const wchar_t* section, const wchar_t* processName, const std::wstring& iniPath)
+{
+    const DWORD bufferSize = 8192; // 足够大的缓冲区以容纳区域内的所有条目
+    wchar_t buffer[bufferSize];
+
+    // 获取区域中的所有条目。返回的格式是 "entry1\0entry2\0\0"
+    DWORD bytesRead = GetPrivateProfileSectionW(section, buffer, bufferSize, iniPath.c_str());
+
+    if (bytesRead == 0) {
+        return false; // 区域为空或不存在
+    }
+
+    // 遍历缓冲区中的每一个以null结尾的字符串
+    for (const wchar_t* p = buffer; *p; p += wcslen(p) + 1) {
+        // 使用不区分大小写的比较，更具鲁棒性
+        if (_wcsicmp(p, processName) == 0) {
+            return true; // 找到匹配项
+        }
+    }
+
+    return false; // 未找到匹配项
+}
+
 // 解析亲和性设置字符串 (例如 "7,11,13-15,19")
 DWORD_PTR ParseAffinityMask(const std::wstring& affinityStr)
 {
@@ -93,10 +119,11 @@ DWORD WINAPI HookThread(LPVOID lpParam)
 {
     HWINEVENTHOOK hHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     
+    // 初始检查，以防DLL注入时游戏已经是前台窗口
     WinEventProc(hHook, EVENT_SYSTEM_FOREGROUND, GetForegroundWindow(), 0, 0, 0, 0);
 
     MSG msg;
-    while (g_runThread && GetMessage(&msg, NULL, 0, 0)) {
+    while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
@@ -105,6 +132,7 @@ DWORD WINAPI HookThread(LPVOID lpParam)
         UnhookWinEvent(hHook);
     }
     
+    // 退出时恢复计时器精度
     if (g_isTimerHigh && g_pfnSetTimerResolution) {
         ULONG currentResolution;
         g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution);
@@ -137,7 +165,7 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
                 if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution))) { g_isTimerHigh = false; }
             }
         }
-        Sleep(g_checkInterval * 1000);
+        Sleep(g_checkInterval * 1000); // g_checkInterval 单位是秒
     }
     if (g_isTimerHigh && g_pfnSetTimerResolution) {
         ULONG currentResolution;
@@ -155,6 +183,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH)
     {
+        // 1. 获取进程名和INI路径
         wchar_t processPath[MAX_PATH];
         GetModuleFileNameW(NULL, processPath, MAX_PATH);
         const wchar_t* processName = wcsrchr(processPath, L'\\');
@@ -167,16 +196,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         std::wstring iniPath = dllPath;
         iniPath += L"Config.ini";
 
-        wchar_t checkBuffer[2]; // Small buffer for checking existence
-
-        // 2. 黑名单检查 (新方法)
-        // GetPrivateProfileString will return the default "0" if the key (processName) is not found.
-        // If the key exists (e.g., "ChsIME.exe" or "ChsIME.exe=1"), it will return something else.
-        GetPrivateProfileStringW(L"BlackList", processName, L"0", checkBuffer, sizeof(checkBuffer), iniPath.c_str());
-        if (wcscmp(checkBuffer, L"0") != 0) {
-            return TRUE; // In blacklist, do nothing.
+        // 2. 黑名单检查 (使用新格式)
+        if (IsProcessInSection(L"BlackList", processName, iniPath)) {
+            return TRUE;
         }
 
+        // 3. 读取INI配置
         g_targetResolution = GetPrivateProfileIntW(L"Settings", L"Resolution", 5000, iniPath.c_str());
         if (g_targetResolution == 0) { g_targetResolution = 5000; }
         
@@ -184,15 +209,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         g_checkInterval = GetPrivateProfileIntW(L"Settings", L"CheckInterval", 10, iniPath.c_str());
         if (g_checkInterval < 1) { g_checkInterval = 1; }
 
+        // 4. 获取函数地址
         HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
         if (hNtdll) {
             g_pfnSetTimerResolution = (pfnGenericTimerApi)GetProcAddress(hNtdll, "NtSetTimerResolution");
         }
         if (!g_pfnSetTimerResolution) { return TRUE; }
 
-        // 5. 检查特殊进程 (新方法)
-        GetPrivateProfileStringW(L"PersistentProcesses", processName, L"0", checkBuffer, sizeof(checkBuffer), iniPath.c_str());
-        if (wcscmp(checkBuffer, L"0") != 0)
+        // 5. 检查特殊进程 (使用新格式)
+        if (IsProcessInSection(L"PersistentProcesses", processName, iniPath))
         {
             g_isSpecialProcess = true;
             ULONG currentResolution;
@@ -227,11 +252,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 {
                     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
                     if (hKernel32) {
-                        // =======================================================================
-                        // 修正区域: 使用正确的变量来获取和调用 SetThreadIdealProcessor
-                        // =======================================================================
-                        g_pfnSetThreadIdealProcessor = (pfnSetThreadIdealProcessor)GetProcAddress(hKernel32, "SetThreadIdealProcessor");
-                        if (g_pfnSetThreadIdealProcessor) {
+                        g_pfnSetTimerResolution = (pfnGenericTimerApi)GetProcAddress(hKernel32, "NtSetTimerResolution");
+                        if (g_pfnSetTimerResolution) {
                             g_pfnSetThreadIdealProcessor(g_hThread, static_cast<DWORD>(idealCore));
                         }
                     }
@@ -241,8 +263,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     }
     else if (ul_reason_for_call == DLL_PROCESS_DETACH)
     {
-        g_runThread = false; // Signal threads to stop
-
         if (g_isSpecialProcess)
         {
             if (g_pfnSetTimerResolution) {
@@ -254,10 +274,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         {
             if (g_hThread)
             {
-                if (g_checkMode != 2 && g_dwThreadId != 0) {
-                    PostThreadMessageW(g_dwThreadId, WM_QUIT, 0, 0);
+                g_runThread = false;
+                if (g_checkMode == 2) {
+                    WaitForSingleObject(g_hThread, (g_checkInterval * 1000) + 1000);
+                } else {
+                    if (g_dwThreadId != 0) {
+                        PostThreadMessageW(g_dwThreadId, WM_QUIT, 0, 0);
+                    }
+                    WaitForSingleObject(g_hThread, 5000);
                 }
-                WaitForSingleObject(g_hThread, 1000); // Wait briefly for thread to exit
                 CloseHandle(g_hThread);
                 g_hThread = NULL;
             }
