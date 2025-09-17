@@ -4,6 +4,7 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
+#include <string.h> // For _wcsicmp
 
 #pragma comment(lib, "User32.lib")
 
@@ -26,6 +27,32 @@ static ULONG g_targetResolution = 5000;
 static bool g_isSpecialProcess = false;
 static DWORD g_checkInterval = 10; // 轮询模式的默认间隔（10秒）
 static int g_checkMode = 1;        // 1: SetWinEventHook模式, 2: 轮询模式
+
+// =======================================================================
+// 新增区域: 检查进程名是否在INI的某个区域中 (用于新的BlackList和PersistentProcesses格式)
+// =======================================================================
+bool IsProcessInSection(const wchar_t* section, const wchar_t* processName, const std::wstring& iniPath)
+{
+    const DWORD bufferSize = 8192; // 足够大的缓冲区以容纳区域内的所有条目
+    wchar_t buffer[bufferSize];
+
+    // 获取区域中的所有条目。返回的格式是 "entry1\0entry2\0\0"
+    DWORD bytesRead = GetPrivateProfileSectionW(section, buffer, bufferSize, iniPath.c_str());
+
+    if (bytesRead == 0) {
+        return false; // 区域为空或不存在
+    }
+
+    // 遍历缓冲区中的每一个以null结尾的字符串
+    for (const wchar_t* p = buffer; *p; p += wcslen(p) + 1) {
+        // 使用不区分大小写的比较，更具鲁棒性
+        if (_wcsicmp(p, processName) == 0) {
+            return true; // 找到匹配项
+        }
+    }
+
+    return false; // 未找到匹配项
+}
 
 // 解析亲和性设置字符串 (例如 "7,11,13-15,19")
 DWORD_PTR ParseAffinityMask(const std::wstring& affinityStr)
@@ -169,21 +196,18 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         std::wstring iniPath = dllPath;
         iniPath += L"Config.ini";
 
-        // 2. 黑名单检查
-        wchar_t checkBuffer[2];
-        GetPrivateProfileStringW(L"BlackList", processName, L"0", checkBuffer, sizeof(checkBuffer), iniPath.c_str());
-        if (wcscmp(checkBuffer, L"0") != 0) { return TRUE; }
+        // 2. 黑名单检查 (使用新格式)
+        if (IsProcessInSection(L"BlackList", processName, iniPath)) {
+            return TRUE;
+        }
 
         // 3. 读取INI配置
         g_targetResolution = GetPrivateProfileIntW(L"Settings", L"Resolution", 5000, iniPath.c_str());
         if (g_targetResolution == 0) { g_targetResolution = 5000; }
         
-        // CheckMode=1为SetWinEventHook模式, CheckMode=2为轮询模式, 默认为1
         g_checkMode = GetPrivateProfileIntW(L"Settings", L"CheckMode", 1, iniPath.c_str());
-
-        // CheckInterval的设置保留为轮询模式的检测间隔 单位改为秒
         g_checkInterval = GetPrivateProfileIntW(L"Settings", L"CheckInterval", 10, iniPath.c_str());
-        if (g_checkInterval < 1) { g_checkInterval = 1; } // 最小间隔1秒
+        if (g_checkInterval < 1) { g_checkInterval = 1; }
 
         // 4. 获取函数地址
         HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
@@ -192,35 +216,27 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         if (!g_pfnSetTimerResolution) { return TRUE; }
 
-        // 5. 检查特殊进程
-        GetPrivateProfileStringW(L"PersistentProcesses", processName, L"0", checkBuffer, sizeof(checkBuffer), iniPath.c_str());
-        
-        if (wcscmp(checkBuffer, L"0") != 0)
+        // 5. 检查特殊进程 (使用新格式)
+        if (IsProcessInSection(L"PersistentProcesses", processName, iniPath))
         {
-            // 如果存在，则为特殊进程
             g_isSpecialProcess = true;
             ULONG currentResolution;
             g_pfnSetTimerResolution(g_targetResolution, TRUE, &currentResolution);
         }
         else
         {
-            // 如果不存在，则为普通进程
             g_isSpecialProcess = false;
             DisableThreadLibraryCalls(hModule);
             g_runThread = true;
 
             if (g_checkMode == 2) {
-                // 轮询模式
                 g_hThread = CreateThread(NULL, 0, MonitorThread, NULL, 0, &g_dwThreadId);
             } else {
-                // SetWinEventHook 模式 (默认)
                 g_hThread = CreateThread(NULL, 0, HookThread, NULL, 0, &g_dwThreadId);
             }
 
-            // 为创建的线程设置亲和性和理想核心
             if (g_hThread != NULL)
             {
-                // 设置线程亲和性
                 wchar_t affinityBuffer[256];
                 GetPrivateProfileStringW(L"Settings", L"Affinity", L"", affinityBuffer, 256, iniPath.c_str());
                 std::wstring affinityStr(affinityBuffer);
@@ -231,14 +247,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                     }
                 }
 
-                // 设置理想核心 (保留原有逻辑)
                 int idealCore = GetPrivateProfileIntW(L"Settings", L"IdealCore", -1, iniPath.c_str());
                 if (idealCore >= 0) 
                 {
                     HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
                     if (hKernel32) {
-                        g_pfnSetThreadIdealProcessor = (pfnSetThreadIdealProcessor)GetProcAddress(hKernel32, "SetThreadIdealProcessor");
-                        if (g_pfnSetThreadIdealProcessor) {
+                        g_pfnSetTimerResolution = (pfnGenericTimerApi)GetProcAddress(hKernel32, "SetThreadIdealProcessor");
+                        if (g_pfnSetTimerResolution) {
                             g_pfnSetThreadIdealProcessor(g_hThread, static_cast<DWORD>(idealCore));
                         }
                     }
@@ -260,12 +275,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             if (g_hThread)
             {
                 g_runThread = false;
-                // 根据模式选择不同的线程退出方式
                 if (g_checkMode == 2) {
-                    // 轮询模式: 等待线程自然退出
                     WaitForSingleObject(g_hThread, (g_checkInterval * 1000) + 1000);
                 } else {
-                    // Hook模式: 发送WM_QUIT退出消息循环
                     if (g_dwThreadId != 0) {
                         PostThreadMessageW(g_dwThreadId, WM_QUIT, 0, 0);
                     }
