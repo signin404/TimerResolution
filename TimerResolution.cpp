@@ -27,49 +27,26 @@ static ULONG g_targetResolution = 5000;
 static bool g_isSpecialProcess = false;
 static DWORD g_checkInterval = 10;
 static int g_checkMode = 1;
+static DWORD g_currentProcessId = 0; // 缓存自身进程ID
 
-// =======================================================================
-// 新增区域: 检查进程名是否在INI的某个区域中 (健壮版本)
-// 此函数可以正确处理 "process.exe" 和 "process.exe=1" 两种格式
-// =======================================================================
+// 检查进程名是否在INI的某个区域中 (健壮版本)
 bool IsProcessInList(const wchar_t* section, const wchar_t* processName, const std::wstring& iniPath)
 {
-    const DWORD bufferSize = 8192; // 足够大的缓冲区
+    const DWORD bufferSize = 8192;
     wchar_t buffer[bufferSize];
-    
-    // 获取区域中的所有条目。返回的格式是 "key1=val1\0key2\0key3=val3\0\0"
     DWORD bytesRead = GetPrivateProfileSectionW(section, buffer, bufferSize, iniPath.c_str());
-
-    if (bytesRead == 0) {
-        return false; // 区域为空或不存在
-    }
+    if (bytesRead == 0) return false;
 
     size_t processNameLen = wcslen(processName);
-
-    // 遍历缓冲区中的每一个以null结尾的字符串
     for (const wchar_t* p = buffer; *p; p += wcslen(p) + 1) {
-        // p 指向当前行, 例如 "MeasureSleep.exe" 或 "MeasureSleep.exe=1"
-        
         const wchar_t* equalsSign = wcschr(p, L'=');
-        size_t lenToCompare;
-
-        if (equalsSign != nullptr) {
-            // 格式为 "key=value", 只比较 key 的部分
-            lenToCompare = equalsSign - p;
-        } else {
-            // 格式为 "key", 比较整个字符串
-            lenToCompare = wcslen(p);
-        }
-
-        // 使用不区分大小写的比较来匹配进程名
+        size_t lenToCompare = (equalsSign != nullptr) ? (equalsSign - p) : wcslen(p);
         if (lenToCompare == processNameLen && _wcsnicmp(p, processName, processNameLen) == 0) {
-            return true; // 找到匹配项
+            return true;
         }
     }
-
-    return false; // 未找到匹配项
+    return false;
 }
-
 
 // 解析亲和性设置字符串
 DWORD_PTR ParseAffinityMask(const std::wstring& affinityStr)
@@ -102,11 +79,11 @@ DWORD_PTR ParseAffinityMask(const std::wstring& affinityStr)
 void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
 {
     if (event == EVENT_SYSTEM_FOREGROUND && hwnd) {
-        const DWORD currentProcessId = GetCurrentProcessId();
         DWORD foregroundProcessId = 0;
         GetWindowThreadProcessId(hwnd, &foregroundProcessId);
         ULONG currentResolution;
-        if (foregroundProcessId == currentProcessId) {
+        // 使用缓存的进程ID进行比较
+        if (foregroundProcessId == g_currentProcessId) {
             if (!g_isTimerHigh && g_pfnSetTimerResolution) {
                 if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, TRUE, &currentResolution))) g_isTimerHigh = true;
             }
@@ -140,7 +117,6 @@ DWORD WINAPI HookThread(LPVOID lpParam)
 // 监控线程的主函数 (轮询模式)
 DWORD WINAPI MonitorThread(LPVOID lpParam)
 {
-    const DWORD currentProcessId = GetCurrentProcessId();
     ULONG currentResolution;
     while (g_runThread) {
         if (!g_pfnSetTimerResolution) { Sleep(1000); continue; }
@@ -149,7 +125,8 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
         if (hForegroundWnd) {
             DWORD foregroundProcessId = 0;
             GetWindowThreadProcessId(hForegroundWnd, &foregroundProcessId);
-            if (foregroundProcessId == currentProcessId) isForeground = true;
+            // 使用缓存的进程ID进行比较
+            if (foregroundProcessId == g_currentProcessId) isForeground = true;
         }
         if (isForeground) {
             if (!g_isTimerHigh) {
@@ -190,7 +167,19 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         std::wstring iniPath = dllPath;
         iniPath += L"Config.ini";
 
-        // 2. 黑名单检查 (使用新的健壮函数)
+        // =======================================================================
+        // 新增区域 1: 添加全局禁用选项
+        // =======================================================================
+        if (GetPrivateProfileIntW(L"Settings", L"Disable", 0, iniPath.c_str()) == 1) {
+            return TRUE; // 如果Disable=1, 则完全禁用DLL功能
+        }
+
+        // =======================================================================
+        // 新增区域 2: 缓存进程ID
+        // =======================================================================
+        g_currentProcessId = GetCurrentProcessId();
+
+        // 黑名单检查
         if (IsProcessInList(L"BlackList", processName, iniPath)) {
             return TRUE;
         }
@@ -208,8 +197,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         if (!g_pfnSetTimerResolution) return TRUE;
 
-        // 5. 检查特殊进程 (使用新的健壮函数)
-        if (IsProcessInList(L"PersistentProcesses", processName, iniPath))
+        // =======================================================================
+        // 修改区域: 将 "PersistentProcesses" 改为 "WhiteList"
+        // =======================================================================
+        if (IsProcessInList(L"WhiteList", processName, iniPath))
         {
             g_isSpecialProcess = true;
             ULONG currentResolution;
