@@ -4,7 +4,7 @@
 #include <vector>
 #include <sstream>
 #include <algorithm>
-#include <string.h> // For _wcsicmp and _wcsnicmp
+#include <string.h> // For _wcsnicmp
 
 #pragma comment(lib, "User32.lib")
 
@@ -29,47 +29,29 @@ static DWORD g_checkInterval = 10;
 static int g_checkMode = 1;
 
 // =======================================================================
-// 新增区域: 检查进程名是否在INI的某个区域中 (健壮版本)
-// 此函数可以正确处理 "process.exe" 和 "process.exe=1" 两种格式
+// 新增区域: 缓存自身进程ID和事件标志
 // =======================================================================
+static DWORD g_currentProcessId = 0;
+static volatile bool g_foregroundChangeDetected = false;
+
+
+// 检查进程名是否在INI的某个区域中 (健壮版本)
 bool IsProcessInList(const wchar_t* section, const wchar_t* processName, const std::wstring& iniPath)
 {
-    const DWORD bufferSize = 8192; // 足够大的缓冲区
+    const DWORD bufferSize = 8192;
     wchar_t buffer[bufferSize];
-    
-    // 获取区域中的所有条目。返回的格式是 "key1=val1\0key2\0key3=val3\0\0"
     DWORD bytesRead = GetPrivateProfileSectionW(section, buffer, bufferSize, iniPath.c_str());
-
-    if (bytesRead == 0) {
-        return false; // 区域为空或不存在
-    }
-
+    if (bytesRead == 0) return false;
     size_t processNameLen = wcslen(processName);
-
-    // 遍历缓冲区中的每一个以null结尾的字符串
     for (const wchar_t* p = buffer; *p; p += wcslen(p) + 1) {
-        // p 指向当前行, 例如 "MeasureSleep.exe" 或 "MeasureSleep.exe=1"
-        
         const wchar_t* equalsSign = wcschr(p, L'=');
-        size_t lenToCompare;
-
-        if (equalsSign != nullptr) {
-            // 格式为 "key=value", 只比较 key 的部分
-            lenToCompare = equalsSign - p;
-        } else {
-            // 格式为 "key", 比较整个字符串
-            lenToCompare = wcslen(p);
-        }
-
-        // 使用不区分大小写的比较来匹配进程名
+        size_t lenToCompare = (equalsSign != nullptr) ? (equalsSign - p) : wcslen(p);
         if (lenToCompare == processNameLen && _wcsnicmp(p, processName, processNameLen) == 0) {
-            return true; // 找到匹配项
+            return true;
         }
     }
-
-    return false; // 未找到匹配项
+    return false;
 }
-
 
 // 解析亲和性设置字符串
 DWORD_PTR ParseAffinityMask(const std::wstring& affinityStr)
@@ -98,36 +80,63 @@ DWORD_PTR ParseAffinityMask(const std::wstring& affinityStr)
     return mask;
 }
 
-// WinEventHook 回调函数
+// =======================================================================
+// 修改区域: WinEventProc 现在只设置一个标志，不做任何实际的检测
+// =======================================================================
 void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
 {
-    if (event == EVENT_SYSTEM_FOREGROUND && hwnd) {
-        const DWORD currentProcessId = GetCurrentProcessId();
-        DWORD foregroundProcessId = 0;
-        GetWindowThreadProcessId(hwnd, &foregroundProcessId);
-        ULONG currentResolution;
-        if (foregroundProcessId == currentProcessId) {
-            if (!g_isTimerHigh && g_pfnSetTimerResolution) {
-                if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, TRUE, &currentResolution))) g_isTimerHigh = true;
-            }
-        } else {
-            if (g_isTimerHigh && g_pfnSetTimerResolution) {
-                if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution))) g_isTimerHigh = false;
-            }
-        }
+    if (event == EVENT_SYSTEM_FOREGROUND) {
+        g_foregroundChangeDetected = true;
     }
 }
 
-// Hook线程的主函数
+// =======================================================================
+// 修改区域: HookThread 现在是一个结合了事件和轮询的混合模式
+// =======================================================================
 DWORD WINAPI HookThread(LPVOID lpParam)
 {
     HWINEVENTHOOK hHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    WinEventProc(hHook, EVENT_SYSTEM_FOREGROUND, GetForegroundWindow(), 0, 0, 0, 0);
-    MSG msg;
-    while (g_runThread && GetMessage(&msg, NULL, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
+    
+    // 初始检查
+    g_foregroundChangeDetected = true;
+
+    while (g_runThread) {
+        // 1. 等待 CheckInterval 周期，同时处理消息以确保Hook能触发
+        DWORD startTime = GetTickCount();
+        while (GetTickCount() - startTime < g_checkInterval * 1000) {
+            if (!g_runThread) break; // 允许提前退出
+            MSG msg;
+            // 处理所有挂起的消息
+            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+            Sleep(10); // 短暂休眠以防止CPU空转
+        }
+
+        // 2. 周期结束后，如果检测到事件，则执行一次前台检查
+        if (g_foregroundChangeDetected) {
+            g_foregroundChangeDetected = false; // 重置标志
+
+            HWND hForegroundWnd = GetForegroundWindow();
+            DWORD foregroundProcessId = 0;
+            if (hForegroundWnd) {
+                GetWindowThreadProcessId(hForegroundWnd, &foregroundProcessId);
+            }
+
+            ULONG currentResolution;
+            if (foregroundProcessId == g_currentProcessId) {
+                if (!g_isTimerHigh && g_pfnSetTimerResolution) {
+                    if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, TRUE, &currentResolution))) g_isTimerHigh = true;
+                }
+            } else {
+                if (g_isTimerHigh && g_pfnSetTimerResolution) {
+                    if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution))) g_isTimerHigh = false;
+                }
+            }
+        }
     }
+
     if (hHook) UnhookWinEvent(hHook);
     if (g_isTimerHigh && g_pfnSetTimerResolution) {
         ULONG currentResolution;
@@ -140,18 +149,16 @@ DWORD WINAPI HookThread(LPVOID lpParam)
 // 监控线程的主函数 (轮询模式)
 DWORD WINAPI MonitorThread(LPVOID lpParam)
 {
-    const DWORD currentProcessId = GetCurrentProcessId();
     ULONG currentResolution;
     while (g_runThread) {
         if (!g_pfnSetTimerResolution) { Sleep(1000); continue; }
         HWND hForegroundWnd = GetForegroundWindow();
-        bool isForeground = false;
+        DWORD foregroundProcessId = 0;
         if (hForegroundWnd) {
-            DWORD foregroundProcessId = 0;
             GetWindowThreadProcessId(hForegroundWnd, &foregroundProcessId);
-            if (foregroundProcessId == currentProcessId) isForeground = true;
         }
-        if (isForeground) {
+        
+        if (foregroundProcessId == g_currentProcessId) { // 使用缓存的ID
             if (!g_isTimerHigh) {
                 if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, TRUE, &currentResolution))) g_isTimerHigh = true;
             }
@@ -178,6 +185,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH)
     {
+        // 缓存自身进程ID
+        g_currentProcessId = GetCurrentProcessId();
+
         wchar_t processPath[MAX_PATH];
         GetModuleFileNameW(NULL, processPath, MAX_PATH);
         const wchar_t* processName = wcsrchr(processPath, L'\\');
@@ -190,7 +200,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         std::wstring iniPath = dllPath;
         iniPath += L"Config.ini";
 
-        // 2. 黑名单检查 (使用新的健壮函数)
         if (IsProcessInList(L"BlackList", processName, iniPath)) {
             return TRUE;
         }
@@ -208,8 +217,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         if (!g_pfnSetTimerResolution) return TRUE;
 
-        // 5. 检查特殊进程 (使用新的健壮函数)
-        if (IsProcessInList(L"PersistentProcesses", processName, iniPath))
+        // 修改区域: 将 "PersistentProcesses" 改为 "WhiteList"
+        if (IsProcessInList(L"WhiteList", processName, iniPath))
         {
             g_isSpecialProcess = true;
             ULONG currentResolution;
@@ -231,9 +240,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             {
                 wchar_t affinityBuffer[256];
                 GetPrivateProfileStringW(L"Settings", L"Affinity", L"", affinityBuffer, 256, iniPath.c_str());
-                std::wstring affinityStr(affinityBuffer);
-                if (!affinityStr.empty()) {
-                    DWORD_PTR affinityMask = ParseAffinityMask(affinityStr);
+                if (affinityBuffer[0] != L'\0') {
+                    DWORD_PTR affinityMask = ParseAffinityMask(affinityBuffer);
                     if (affinityMask > 0) SetThreadAffinityMask(g_hThread, affinityMask);
                 }
 
@@ -254,19 +262,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     else if (ul_reason_for_call == DLL_PROCESS_DETACH)
     {
         g_runThread = false;
-        if (g_isSpecialProcess) {
-            if (g_pfnSetTimerResolution) {
+        if (g_hThread) {
+            WaitForSingleObject(g_hThread, 1000);
+            CloseHandle(g_hThread);
+            g_hThread = NULL;
+        }
+        
+        // 确保在DLL卸载时恢复计时器精度
+        if (g_isSpecialProcess || g_isTimerHigh) {
+             if (g_pfnSetTimerResolution) {
                 ULONG currentResolution;
                 g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution);
-            }
-        } else {
-            if (g_hThread) {
-                if (g_checkMode != 2 && g_dwThreadId != 0) {
-                    PostThreadMessageW(g_dwThreadId, WM_QUIT, 0, 0);
-                }
-                WaitForSingleObject(g_hThread, 1000);
-                CloseHandle(g_hThread);
-                g_hThread = NULL;
             }
         }
     }
