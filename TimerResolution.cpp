@@ -75,7 +75,7 @@ DWORD_PTR ParseAffinityMask(const std::wstring& affinityStr)
     return mask;
 }
 
-// WinEventProc 现在只设置一个标志
+// WinEventProc 只设置一个标志
 void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
 {
     if (event == EVENT_SYSTEM_FOREGROUND) {
@@ -84,34 +84,20 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, 
 }
 
 // =======================================================================
-// 修改区域: HookThread 现在使用 MsgWaitForMultipleObjects 实现高效等待
+// 修改区域: HookThread 逻辑完全重写以正确实现延时检测
 // =======================================================================
 DWORD WINAPI HookThread(LPVOID lpParam)
 {
     HWINEVENTHOOK hHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     
-    // 初始检查
+    // 强制在启动时进行一次初始检查
     g_foregroundChangeDetected = true;
 
-    while (g_runThread) {
-        // 1. 使用 MsgWaitForMultipleObjects 高效等待。
-        //    它会等待 g_checkInterval 时间，或者在有新消息（如我们的Hook事件）时提前返回。
-        //    QS_ALLINPUT 确保我们对所有类型的消息都做出反应。
-        DWORD waitResult = MsgWaitForMultipleObjects(0, NULL, FALSE, g_checkInterval * 1000, QS_ALLINPUT);
-
-        // 如果有消息到达，处理消息队列以确保Hook回调被触发
-        if (waitResult == WAIT_OBJECT_0) {
-            MSG msg;
-            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
-        }
-        
-        // 2. 周期结束后（无论是超时还是被消息唤醒），如果检测到事件，则执行一次前台检查
-        if (g_foregroundChangeDetected) {
-            g_foregroundChangeDetected = false; // 重置标志
-
+    while (g_runThread)
+    {
+        // 1. 在每个周期的开始，根据上一个周期的结果执行检查
+        if (g_foregroundChangeDetected)
+        {
             HWND hForegroundWnd = GetForegroundWindow();
             DWORD foregroundProcessId = 0;
             if (hForegroundWnd) {
@@ -128,6 +114,35 @@ DWORD WINAPI HookThread(LPVOID lpParam)
                     if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, FALSE, &currentResolution))) g_isTimerHigh = false;
                 }
             }
+        }
+
+        // 2. 为下一个周期重置标志，并开始计时
+        g_foregroundChangeDetected = false;
+        DWORD intervalStartTime = GetTickCount();
+        const DWORD intervalDuration = g_checkInterval * 1000;
+
+        // 3. 进入等待循环，直到当前周期结束
+        //    这个循环的唯一目的就是等待并处理消息
+        while (g_runThread)
+        {
+            DWORD elapsedTime = GetTickCount() - intervalStartTime;
+            if (elapsedTime >= intervalDuration) {
+                break; // 周期结束，退出等待循环
+            }
+
+            DWORD remainingTime = intervalDuration - elapsedTime;
+            DWORD waitResult = MsgWaitForMultipleObjects(0, NULL, FALSE, remainingTime, QS_ALLINPUT);
+
+            if (waitResult == WAIT_OBJECT_0) {
+                // 有消息到达，处理它以确保我们的Hook回调能被触发
+                MSG msg;
+                while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+                // WinEventProc 会将 g_foregroundChangeDetected 设置为 true
+            }
+            // 如果是 WAIT_TIMEOUT，则什么都不做，循环将继续直到时间耗尽
         }
     }
 
@@ -256,7 +271,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     {
         g_runThread = false;
         if (g_hThread) {
-            // Wake the thread if it's waiting
             if (g_dwThreadId != 0) PostThreadMessageW(g_dwThreadId, WM_NULL, 0, 0);
             WaitForSingleObject(g_hThread, 1000);
             CloseHandle(g_hThread);
