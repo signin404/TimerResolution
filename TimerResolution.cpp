@@ -27,15 +27,10 @@ static ULONG g_targetResolution = 5000;
 static bool g_isSpecialProcess = false;
 static DWORD g_checkInterval = 10;
 static int g_checkMode = 1;
-
-// =======================================================================
-// 新增区域: 缓存自身进程ID和事件标志
-// =======================================================================
 static DWORD g_currentProcessId = 0;
 static volatile bool g_foregroundChangeDetected = false;
 
-
-// 检查进程名是否在INI的某个区域中 (健壮版本)
+// 检查进程名是否在INI的某个区域中
 bool IsProcessInList(const wchar_t* section, const wchar_t* processName, const std::wstring& iniPath)
 {
     const DWORD bufferSize = 8192;
@@ -46,7 +41,7 @@ bool IsProcessInList(const wchar_t* section, const wchar_t* processName, const s
     for (const wchar_t* p = buffer; *p; p += wcslen(p) + 1) {
         const wchar_t* equalsSign = wcschr(p, L'=');
         size_t lenToCompare = (equalsSign != nullptr) ? (equalsSign - p) : wcslen(p);
-        if (lenToCompare == processNameLen && _wcsnicmp(p, processName, processNameLen) == 0) {
+        if (lenToCompare == processNameLen && _wcsnicmp(p, processName, lenToCompare) == 0) {
             return true;
         }
     }
@@ -80,9 +75,7 @@ DWORD_PTR ParseAffinityMask(const std::wstring& affinityStr)
     return mask;
 }
 
-// =======================================================================
-// 修改区域: WinEventProc 现在只设置一个标志，不做任何实际的检测
-// =======================================================================
+// WinEventProc 现在只设置一个标志
 void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
 {
     if (event == EVENT_SYSTEM_FOREGROUND) {
@@ -91,7 +84,7 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, 
 }
 
 // =======================================================================
-// 修改区域: HookThread 现在是一个结合了事件和轮询的混合模式
+// 修改区域: HookThread 现在使用 MsgWaitForMultipleObjects 实现高效等待
 // =======================================================================
 DWORD WINAPI HookThread(LPVOID lpParam)
 {
@@ -101,20 +94,21 @@ DWORD WINAPI HookThread(LPVOID lpParam)
     g_foregroundChangeDetected = true;
 
     while (g_runThread) {
-        // 1. 等待 CheckInterval 周期，同时处理消息以确保Hook能触发
-        DWORD startTime = GetTickCount();
-        while (GetTickCount() - startTime < g_checkInterval * 1000) {
-            if (!g_runThread) break; // 允许提前退出
+        // 1. 使用 MsgWaitForMultipleObjects 高效等待。
+        //    它会等待 g_checkInterval 时间，或者在有新消息（如我们的Hook事件）时提前返回。
+        //    QS_ALLINPUT 确保我们对所有类型的消息都做出反应。
+        DWORD waitResult = MsgWaitForMultipleObjects(0, NULL, FALSE, g_checkInterval * 1000, QS_ALLINPUT);
+
+        // 如果有消息到达，处理消息队列以确保Hook回调被触发
+        if (waitResult == WAIT_OBJECT_0) {
             MSG msg;
-            // 处理所有挂起的消息
             while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
-            Sleep(10); // 短暂休眠以防止CPU空转
         }
-
-        // 2. 周期结束后，如果检测到事件，则执行一次前台检查
+        
+        // 2. 周期结束后（无论是超时还是被消息唤醒），如果检测到事件，则执行一次前台检查
         if (g_foregroundChangeDetected) {
             g_foregroundChangeDetected = false; // 重置标志
 
@@ -146,6 +140,7 @@ DWORD WINAPI HookThread(LPVOID lpParam)
     return 0;
 }
 
+
 // 监控线程的主函数 (轮询模式)
 DWORD WINAPI MonitorThread(LPVOID lpParam)
 {
@@ -158,7 +153,7 @@ DWORD WINAPI MonitorThread(LPVOID lpParam)
             GetWindowThreadProcessId(hForegroundWnd, &foregroundProcessId);
         }
         
-        if (foregroundProcessId == g_currentProcessId) { // 使用缓存的ID
+        if (foregroundProcessId == g_currentProcessId) {
             if (!g_isTimerHigh) {
                 if (NT_SUCCESS(g_pfnSetTimerResolution(g_targetResolution, TRUE, &currentResolution))) g_isTimerHigh = true;
             }
@@ -185,7 +180,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH)
     {
-        // 缓存自身进程ID
         g_currentProcessId = GetCurrentProcessId();
 
         wchar_t processPath[MAX_PATH];
@@ -217,7 +211,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         if (!g_pfnSetTimerResolution) return TRUE;
 
-        // 修改区域: 将 "PersistentProcesses" 改为 "WhiteList"
         if (IsProcessInList(L"WhiteList", processName, iniPath))
         {
             g_isSpecialProcess = true;
@@ -263,12 +256,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     {
         g_runThread = false;
         if (g_hThread) {
+            // Wake the thread if it's waiting
+            if (g_dwThreadId != 0) PostThreadMessageW(g_dwThreadId, WM_NULL, 0, 0);
             WaitForSingleObject(g_hThread, 1000);
             CloseHandle(g_hThread);
             g_hThread = NULL;
         }
         
-        // 确保在DLL卸载时恢复计时器精度
         if (g_isSpecialProcess || g_isTimerHigh) {
              if (g_pfnSetTimerResolution) {
                 ULONG currentResolution;
